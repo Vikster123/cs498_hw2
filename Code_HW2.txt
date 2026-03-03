@@ -1,1 +1,92 @@
+const axios = require("axios");
+const { randomUUID } = require("crypto");
+const { performance } = require("perf_hooks");
+
+const US_URL = "http://34.45.103.5:8080";
+const EU_URL = "http://34.34.151.173:8080";
+
+const ITERATIONS = 15;
+const CONSISTENCY_LOOP = 100;
+
+async function timeRequest(fn) {
+  const t0 = performance.now();
+  const res = await fn();
+  const ms = performance.now() - t0;
+  return { ms, res };
+}
+
+async function measureGet(url, endpoint) {
+  const times = [];
+  for (let i = 0; i < ITERATIONS; i++) {
+    const { ms } = await timeRequest(() => axios.get(`${url}${endpoint}`));
+    times.push(ms);
+  }
+  return (times.reduce((a, b) => a + b, 0) / times.length).toFixed(2);
+}
+
+async function measurePost(url, endpoint, bodyFn) {
+  const times = [];
+  for (let i = 0; i < ITERATIONS; i++) {
+    const body = bodyFn(i);
+    const { ms } = await timeRequest(() => axios.post(`${url}${endpoint}`, body));
+    times.push(ms);
+  }
+  return (times.reduce((a, b) => a + b, 0) / times.length).toFixed(2);
+}
+
+async function runTests() {
+  console.log("--- Part A: Average Latency ---");
+
+  const instances = { "us-central1": US_URL, "europe-west1": EU_URL };
+
+  for (const [name, url] of Object.entries(instances)) {
+    // /list uses GET
+    const listAvg_latency = await measureGet(url, "/list");
+    console.log(`${name} GET /list: ${listAvg_latency}ms`);
+
+    // /register uses POST
+    const registerAvg_latency = await measurePost(url, "/register", (i) => ({
+      username: randomUUID(),
+    }));
+    console.log(`${name} POST /register: ${registerAvg_latency}ms`);
+  }
+
+  console.log("\n--- Part B:Eventual Consistency ---");
+
+  let missingCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < CONSISTENCY_LOOP; i++) {
+    const username = randomUUID();
+
+    try {
+      // 1) using us central instance
+      await axios.post(`${US_URL}/register`, { username });
+
+      // 2) using eurpoe instance
+      const response = await axios.get(`${EU_URL}/list`);
+      const users = response.data.users || [];
+
+      if (!users.includes(username)) missingCount++;
+    } catch (e) {
+      errorCount++;
+      if (errorCount <= 3) {
+        console.error("Loop error:", e.code || e.message);
+      }
+    }
+  }
+
+  console.log(`Total attempts: ${CONSISTENCY_LOOP}`);
+  console.log(`Read misses: ${missingCount}`);
+  console.log(`Errors during loop: ${errorCount}`);
+  console.log(`Miss percentage: ${
+    CONSISTENCY_LOOP - errorCount > 0
+      ? ((missingCount / (CONSISTENCY_LOOP - errorCount)) * 100).toFixed(2)
+      : "N/A"
+  }%`);
+}
+
+runTests().catch((e) => {
+  console.error("Fatal:", e.code || e.message);
+});
 
